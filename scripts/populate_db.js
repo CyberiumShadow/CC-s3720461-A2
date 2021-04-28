@@ -2,9 +2,7 @@
 const { DynamoDBClient, BatchWriteItemCommand, PutItemCommand, CreateTableCommand, DeleteTableCommand } = require('@aws-sdk/client-dynamodb')
 const [, , ...args] = process.argv;
 
-const dbclient = new DynamoDBClient({
-  endpoint: 'http://localhost:8000'
-});
+const dbclient = new DynamoDBClient();
 
 const command = args[0];
 
