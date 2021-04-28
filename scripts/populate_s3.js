@@ -4,7 +4,9 @@ const fetch = require('node-fetch');
 
 const [, , ...args] = process.argv;
 
-const s3client = new S3Client();
+const s3client = new S3Client({
+  region: 'us-east-1',
+});
 
 const command = args[0];
 

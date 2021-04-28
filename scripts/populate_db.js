@@ -2,7 +2,9 @@
 const { DynamoDBClient, BatchWriteItemCommand, PutItemCommand, CreateTableCommand, DeleteTableCommand } = require('@aws-sdk/client-dynamodb')
 const [, , ...args] = process.argv;
 
-const dbclient = new DynamoDBClient();
+const dbclient = new DynamoDBClient({
+  region: 'us-east-1',
+});
 
 const command = args[0];
 
