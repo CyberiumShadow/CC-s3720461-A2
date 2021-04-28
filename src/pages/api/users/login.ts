@@ -1,5 +1,6 @@
-import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb'
+import { GetItemCommand } from '@aws-sdk/client-dynamodb'
 import withSession from '@lib/session'
+import { dbClient } from '@lib/aws'
 
 import type { NextApiRequest, NextApiResponse } from 'next'
 import type { Session } from 'next-iron-session'
@@ -7,10 +8,6 @@ import type { Session } from 'next-iron-session'
 interface NextApiRequestWithSession extends NextApiRequest {
   session: Session
 }
-
-const dynamoclient = new DynamoDBClient({
-  endpoint: 'http://localhost:8000',
-})
 
 export default withSession(
   async (_: NextApiRequestWithSession, res: NextApiResponse): Promise<unknown> => {
@@ -23,7 +20,7 @@ export default withSession(
             email: { S: data.email },
           },
         }
-        const result = await dynamoclient.send(new GetItemCommand(params))
+        const result = await dbClient.send(new GetItemCommand(params))
         if (result.Item) {
           const userData = result.Item
           if (data.password !== userData.password.S) {
