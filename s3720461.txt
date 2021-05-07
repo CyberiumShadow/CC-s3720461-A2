@@ -1,0 +1,1807 @@
+COSC2626/2640 Cloud Computing Assignment 1
+Johnson Chen - s3720461
+
+Task 1 Code
+=================
+
+package.json
+-----------------
+{
+  "name": "assignment2",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "prepare": "husky install",
+    "dev": "next dev src",
+    "build": "next build src",
+    "start": "next start src",
+    "type-check": "tsc --project src/tsconfig.json --pretty --noEmit",
+    "lint": "eslint --ext js,jsx,ts,tsx --fix"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.13.0",
+    "@aws-sdk/client-s3": "^3.13.0",
+    "bootstrap": "^4.6.0",
+    "next": "^10.1.3",
+    "next-iron-session": "^4.1.13",
+    "node-fetch": "^2.6.1",
+    "react": "^17.0.2",
+    "react-bootstrap": "^1.5.2",
+    "react-dom": "^17.0.2",
+    "sass": "^1.32.11",
+    "swr": "^0.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^14.14.41",
+    "@types/react": "^17.0.3",
+    "@types/react-dom": "^17.0.3",
+    "@typescript-eslint/eslint-plugin": "^4.22.0",
+    "@typescript-eslint/parser": "^4.22.0",
+    "eslint": "^7.24.0",
+    "eslint-config-prettier": "^8.2.0",
+    "eslint-plugin-jsx-a11y": "^6.4.1",
+    "eslint-plugin-prettier": "^3.4.0",
+    "eslint-plugin-react": "^7.23.2",
+    "eslint-plugin-react-hooks": "^4.2.0",
+    "husky": "^6.0.0",
+    "lint-staged": "^10.5.4",
+    "prettier": "^2.2.1",
+    "typescript": "^4.2.4"
+  }
+}
+-----------------
+
+scripts/populate_db.js
+-----------------
+#! /usr/bin/env node
+const { DynamoDBClient, BatchWriteItemCommand, PutItemCommand, CreateTableCommand, DeleteTableCommand } = require('@aws-sdk/client-dynamodb')
+const [, , ...args] = process.argv;
+
+const dbclient = new DynamoDBClient({
+  region: 'us-east-1',
+});
+
+const command = args[0];
+
+const dynamoSend = async (command) => {
+  try {
+    const data = await dbclient.send(command);
+    console.log("Success", data);
+  } catch (err) {
+    console.log("Error", err);
+  }
+}
+
+const processCommand = async (command) => {
+  switch (command) {
+    case 'init': {
+      const loginTableParams = {
+        AttributeDefinitions: [
+          {
+            AttributeName: "email",
+            AttributeType: "S"
+          }
+        ],
+        KeySchema: [
+          {
+            AttributeName: "email",
+            KeyType: "HASH"
+          }
+        ],
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 5,
+          WriteCapacityUnits: 5,
+        },
+        TableName: "login"
+      }
+      return dynamoSend(new CreateTableCommand(loginTableParams))
+    }
+    case 'bootstrap': {
+      const { users } = require('../bootstrap.json');
+      const batchUsers = users.map((user) => {
+        return {
+          PutRequest: {
+            Item: {
+              email: { S: user.email },
+              user_name: { S: user.user_name },
+              password: { S: user.password },
+              subscriptions: { L: []}
+            }
+          }
+        }
+      })
+  
+      const params = {
+        RequestItems: {
+          login: batchUsers
+        }
+      }
+      return dynamoSend(new BatchWriteItemCommand(params));
+    }
+    case 'create': {
+      const params = {
+        AttributeDefinitions: [
+          {
+            AttributeName: "title",
+            AttributeType: "S"
+          },
+          {
+            AttributeName: "artist",
+            AttributeType: "S"
+          }
+        ],
+        KeySchema: [
+          {
+            AttributeName: "artist",
+            KeyType: "HASH"
+          },
+          {
+            AttributeName: "title",
+            KeyType: "RANGE"
+          }
+        ],
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 5,
+          WriteCapacityUnits: 5,
+        },
+        TableName: "music"
+      }
+      return dynamoSend(new CreateTableCommand(params));
+    }
+    case 'populate': {
+      const { songs } = require('../a2.json');
+      return songs.map((song) => {
+        const params = {
+          TableName: "music",
+          Item: {
+            artist: { S: song.artist },
+            title: { S: song.title },
+            year: { S: song.year },
+            web_url: { S: song.web_url },
+            img_url: { S: song.img_url }
+          }
+        }
+        return dynamoSend(new PutItemCommand(params));
+      })
+    }
+    case 'teardown': {
+      const musicParams = {
+        TableName: "music"
+      };
+      const loginParams = {
+        TableName: "login"
+      }
+      await dynamoSend(new DeleteTableCommand(musicParams));
+      return dynamoSend(new DeleteTableCommand(loginParams));
+    }
+    default:
+      return console.log('Invalid Command')
+  }
+}
+
+processCommand(command);
+-----------------
+
+scripts/populate_s3.js
+-----------------
+#! /usr/bin/env node
+const { S3Client, CreateBucketCommand, DeleteBucketCommand, ListObjectsV2Command, PutObjectCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+const fetch = require('node-fetch');
+
+const [, , ...args] = process.argv;
+
+const s3client = new S3Client({
+  region: 'us-east-1',
+});
+
+const command = args[0];
+
+const sendCommand = async (command) => {
+  try {
+    const data = await s3client.send(command);
+    console.log("Success", data);
+    return data;
+  } catch (err) {
+    console.log("Error", err);
+  }
+}
+
+const bucketParams = {
+  Bucket: "s3720461-cc-a2-artist-images",
+  ACL: "public-read"
+}
+
+switch (command) {
+  case 'init': {
+    return sendCommand(new CreateBucketCommand(bucketParams))
+  }
+  case 'populate': {
+    const { songs } = require('../a2.json');
+    return songs.map(async (song) => {
+      const res = await fetch(song.img_url);
+      const buffer = await res.buffer();
+      const uploadParams = {
+        Bucket: bucketParams.Bucket,
+        Key: `artists/${song.img_url.split('/')[5]}`,
+        Body: buffer,
+        ACL: "public-read"
+      };
+      return sendCommand(new PutObjectCommand(uploadParams));
+    })
+  }
+  case 'teardown': {
+  sendCommand(new ListObjectsV2Command(bucketParams)).then(async (result) => {
+    if (!result) return;
+    const objects = result.Contents.map((object) => {
+      return {
+        Key: object.Key
+      }
+    })
+
+    const deleteParams = {
+     Bucket: bucketParams.Bucket,
+     Delete: {
+       Objects: objects
+     }
+    }
+
+    await sendCommand(new DeleteObjectsCommand(deleteParams));
+    return sendCommand(new DeleteBucketCommand(bucketParams));
+    });
+  }
+}
+-----------------
+
+bootstrap.json
+-----------------
+{
+  "users": [
+    {
+      "email": "s37204610@student.rmit.edu.au",
+      "user_name": "Johnson Chen0",
+      "password": "012345"
+    },
+    {
+      "email": "s37204611@student.rmit.edu.au",
+      "user_name": "Johnson Chen1",
+      "password": "123456"
+    },
+    {
+      "email": "s37204612@student.rmit.edu.au",
+      "user_name": "Johnson Chen2",
+      "password": "234567"
+    },
+    {
+      "email": "s37204613@student.rmit.edu.au",
+      "user_name": "Johnson Chen3",
+      "password": "345678"
+    },
+    {
+      "email": "s37204614@student.rmit.edu.au",
+      "user_name": "Johnson Chen4",
+      "password": "456789"
+    },
+    {
+      "email": "s37204615@student.rmit.edu.au",
+      "user_name": "Johnson Chen5",
+      "password": "567890"
+    },
+    {
+      "email": "s37204616@student.rmit.edu.au",
+      "user_name": "Johnson Chen6",
+      "password": "678901"
+    },
+    {
+      "email": "s37204617@student.rmit.edu.au",
+      "user_name": "Johnson Chen7",
+      "password": "789012"
+    },
+    {
+      "email": "s37204618@student.rmit.edu.au",
+      "user_name": "Johnson Chen8",
+      "password": "890123"
+    },
+    {
+      "email": "s37204619@student.rmit.edu.au",
+      "user_name": "Johnson Chen9",
+      "password": "901234"
+    }
+  ]
+}
+-----------------
+
+src/components/footer.tsx
+-----------------
+import React from 'react'
+
+const footerStyle = {}
+
+const Footer = () => <div className="Footer" style={footerStyle}></div>
+
+export default Footer
+-----------------
+
+src/components/header.tsx
+-----------------
+import React from 'react'
+import { Container, Navbar } from 'react-bootstrap'
+
+// const headerStyle = {};
+
+const Header = () => (
+  <header>
+    <Navbar className="Header">
+      <Container className="d-flex justify-content-between px-3">
+        <a href="/forum" className="navbar-brand d-flex align-items-center py-2">
+          CC Assignment 2 - s3720461
+        </a>
+      </Container>
+    </Navbar>
+  </header>
+)
+
+export default Header
+-----------------
+
+src/components/layout.tsx
+-----------------
+import React from 'react'
+import Head from 'next/head'
+import Link from 'next/link'
+import styles from '@styles/layout.module.css'
+import utilStyles from '@styles/utils.module.css'
+
+const name = 's3720461 - CC Assignment 2'
+export const siteTitle = 's3720461 - CC Assignment 2'
+
+export default function Layout({ children, home }: { children: React.ReactNode; home?: boolean }) {
+  return (
+    <>
+      <Head>
+        <link rel="icon" href="/favicon.ico" />
+        <meta name="description" content="RMIT Cloud Computing Assignment 2" />
+        <meta name="og:title" content={siteTitle} />
+      </Head>
+      <header className={styles.header}>
+        {home ? (
+          <>
+            <h1 className={utilStyles.heading2Xl}>{name}</h1>
+          </>
+        ) : (
+          <>
+            <h2 className={utilStyles.headingLg}>
+              <Link href="/home">
+                <a className={utilStyles.colorInherit}>{name}</a>
+              </Link>
+            </h2>
+          </>
+        )}
+      </header>
+      <main>{children}</main>
+      {!home && (
+        <div className={styles.backToHome}>
+          <Link href="/home">
+            <a>← Back to home</a>
+          </Link>
+        </div>
+      )}
+    </>
+  )
+}
+-----------------
+
+src/components/LoginForm.tsx
+-----------------
+import React from 'react'
+import useForm from '@lib/hooks/useForm'
+import validate from '@lib/validationRules/LoginFormValidationRules'
+import fetchJson from '@lib/fetchJson'
+import useUser from '@lib/hooks/useUser'
+
+interface UseFormHook {
+  values: {
+    [key: string]: string
+  }
+  errors: {
+    login?: string
+    email?: string
+    password?: string
+  }
+  // eslint-disable-next-line no-empty-pattern
+  setErrors: ({}) => void
+  handleChange: (event: any) => void
+  handleSubmit: (event: any) => void
+  handleFile: (event: any) => void
+}
+
+const LoginForm = (): JSX.Element => {
+  const { values, errors, setErrors, handleChange, handleSubmit }: UseFormHook = useForm(
+    postForm,
+    validate
+  )
+  const { mutateUser } = useUser({
+    redirectTo: '/home',
+    redirectIfFound: true,
+  })
+
+  async function postForm(): Promise<boolean | void> {
+    try {
+      const res = await fetchJson('/api/users/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: values.email,
+          password: values.password,
+        }),
+      })
+      await mutateUser(res)
+      if (res.status === 401) {
+        return setErrors({ login: res.message })
+      }
+    } catch (error) {
+      return setErrors({ login: error.message })
+    }
+  }
+
+  return (
+    <div className="inner-container">
+      <div className="header">Login</div>
+      <small className="danger-error">{errors.login ? errors.login : ''}</small>
+      <div className="box">
+        <div className="input-group">
+          <label htmlFor="email">Email</label>
+          <input
+            type="text"
+            name="email"
+            className="login-input"
+            placeholder="s3720461@student.rmit.edu.au"
+            onChange={handleChange}
+            value={values.email || ''}
+            required
+          />
+          <small className="danger-error">{errors.email ? errors.email : ''}</small>
+        </div>
+
+        <div className="input-group">
+          <label htmlFor="password">Password</label>
+          <input
+            type="password"
+            name="password"
+            className="login-input"
+            placeholder="Password"
+            onChange={handleChange}
+            value={values.password || ''}
+            required
+          />
+          <small className="danger-error">{errors.password ? errors.password : ''}</small>
+        </div>
+        <button type="button" className="login-btn" onClick={handleSubmit}>
+          Login
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export default LoginForm
+-----------------
+
+src/components/loginLayout.tsx
+-----------------
+import React from 'react'
+import Header from './header'
+import Footer from './footer'
+import { Container } from 'react-bootstrap'
+
+const layoutStyle = {}
+
+const contentStyle = {}
+
+const Layout = (props: any) => (
+  <div className="Layout" style={layoutStyle}>
+    <Header />
+    <Container className="Content container" style={contentStyle}>
+      {props.children}
+    </Container>
+    <Footer />
+  </div>
+)
+
+export default Layout
+-----------------
+
+src/components/QueryForm.tsx
+-----------------
+import Form from 'react-bootstrap/Form'
+import Button from 'react-bootstrap/Button'
+
+export default function QueryForm(props): JSX.Element {
+  const submitQuery = (event) => {
+    event.preventDefault()
+    const { songTitle, songArtist, songYear } = event.target
+    return props.passQuery({
+      title: encodeURIComponent(songTitle.value),
+      artist: encodeURIComponent(songArtist.value),
+      year: encodeURIComponent(songYear.value),
+    })
+  }
+
+  return (
+    <Form onSubmit={submitQuery}>
+      <Form.Group>
+        <Form.Label>Title</Form.Label>
+        <Form.Control
+          id="songTitle"
+          name="songTitle"
+          type="text"
+          placeholder="Song Title"
+        ></Form.Control>
+      </Form.Group>
+
+      <Form.Group>
+        <Form.Label>Artist</Form.Label>
+        <Form.Control
+          id="songArtist"
+          name="songArtist"
+          type="text"
+          placeholder="Song Artist"
+        ></Form.Control>
+      </Form.Group>
+
+      <Form.Group>
+        <Form.Label>Year</Form.Label>
+        <Form.Control
+          id="songYear"
+          name="songYear"
+          type="text"
+          placeholder="Song Year"
+        ></Form.Control>
+      </Form.Group>
+
+      <Button variant="primary" type="submit">
+        Query
+      </Button>
+    </Form>
+  )
+}
+-----------------
+
+src/components/RegisterForm.tsx
+-----------------
+import React from 'react'
+import { useRouter } from 'next/router'
+import useForm from '@lib/hooks/useForm'
+import validate from '@lib/validationRules/RegisterFormValidationRules'
+
+interface UseFormHook {
+  values: {
+    [key: string]: string
+  }
+  errors: {
+    email?: string
+    username?: string
+    password?: string
+    login?: string
+  }
+  // eslint-disable-next-line no-empty-pattern
+  setErrors: ({}) => void
+  handleChange: (event: any) => void
+  handleSubmit: (event: any) => void
+  handleFile: (event: any) => void
+}
+
+const RegisterForm = (): JSX.Element => {
+  const router = useRouter()
+  const { values, errors, setErrors, handleChange, handleSubmit }: UseFormHook = useForm(
+    postForm,
+    validate
+  )
+
+  async function postForm(): Promise<void> {
+    const res = await fetch('/api/users', {
+      body: JSON.stringify({
+        email: values.email,
+        user_name: values.username,
+        password: values.password,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+
+    const result = await res.json()
+
+    if (res.status === 409) {
+      return setErrors({ login: result.message })
+    }
+    return router.reload()
+  }
+
+  return (
+    <div className="inner-container">
+      <div className="header">Register</div>
+      <small className="danger-error">{errors.login ? errors.login : ''}</small>
+      <div className="box">
+        <div className="input-group">
+          <label htmlFor="email">Email</label>
+          <input
+            type="email"
+            name="email"
+            className="login-input"
+            placeholder="s3720461@student.rmit.edu.au"
+            onChange={handleChange}
+            value={values.email || ''}
+            required
+          />
+          <small className="danger-error">{errors.email ? errors.email : ''}</small>
+        </div>
+
+        <div className="input-group">
+          <label htmlFor="username">Username</label>
+          <input
+            type="text"
+            name="username"
+            className="login-input"
+            placeholder="JohnsonChen"
+            onChange={handleChange}
+            value={values.username || ''}
+            required
+          />
+          <small className="danger-error">{errors.username ? errors.username : ''}</small>
+        </div>
+
+        <div className="input-group">
+          <label htmlFor="password">Password</label>
+          <input
+            type="password"
+            name="password"
+            className="login-input"
+            placeholder="Password"
+            onChange={handleChange}
+            value={values.password || ''}
+            required
+          />
+          <small className="danger-error">{errors.password ? errors.password : ''}</small>
+        </div>
+
+        <button type="button" className="login-btn" onClick={handleSubmit}>
+          Register
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export default RegisterForm
+-----------------
+
+src/components/UserPanel.tsx
+-----------------
+import React from 'react'
+import { Container, Col, Row, Card } from 'react-bootstrap'
+import { useRouter } from 'next/router'
+import useUser from '@lib/hooks/useUser'
+import fetchJson from '@lib/fetchJson'
+
+const UserPanel = () => {
+  const { user, mutateUser } = useUser()
+  const router = useRouter()
+  return (
+    <Container>
+      <Row>
+        <Col></Col>
+        <Col sm={6}>
+          <Card>
+            <Card.Body>
+              <Card.Title>{user.userName}</Card.Title>
+              <Card.Link
+                href="#"
+                onClick={async (e) => {
+                  e.preventDefault()
+                  mutateUser(await fetchJson('/api/logout', { method: 'POST' }), false)
+                  router.push('/')
+                }}
+              >
+                Logout
+              </Card.Link>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col></Col>
+      </Row>
+    </Container>
+  )
+}
+
+export default UserPanel
+-----------------
+
+src/lib/hooks/useForm.ts
+-----------------
+import { useState, useEffect } from 'react'
+
+const useForm = (callback: any, validate: any) => {
+  const [values, setValues] = useState({})
+  const [errors, setErrors] = useState({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (Object.keys(errors).length === 0 && isSubmitting) {
+      callback()
+    }
+  }, [errors])
+
+  const handleSubmit = (event: any) => {
+    if (event) event.preventDefault()
+    setErrors(validate(values))
+    setIsSubmitting(true)
+  }
+
+  const handleFile = (event: any) => {
+    setValues((values) => ({
+      ...values,
+      filePreview: URL.createObjectURL(event.target.files[0]),
+      fileBlob: event.target.files[0],
+    }))
+  }
+
+  const handleChange = (event: any) => {
+    event.persist()
+    setValues((values) => ({ ...values, [event.target.name]: event.target.value }))
+  }
+
+  return {
+    handleChange,
+    handleSubmit,
+    handleFile,
+    setValues,
+    setErrors,
+    values,
+    errors,
+  }
+}
+
+export default useForm
+-----------------
+
+src/lib/hooks/useUser.ts
+-----------------
+import { useEffect } from 'react'
+import Router from 'next/router'
+import useSWR from 'swr'
+
+export default function useUser({
+  redirectTo = false,
+  redirectIfFound = false,
+}: {
+  redirectTo?: string | boolean
+  redirectIfFound?: boolean
+} = {}) {
+  const { data: user, mutate: mutateUser } = useSWR('/api/session')
+
+  useEffect(() => {
+    // if no redirect needed, just return (example: already on /dashboard)
+    // if user data not yet there (fetch in progress, logged in or not) then don't do anything yet
+    if (!redirectTo || !user) return
+
+    if (
+      // If redirectTo is set, redirect if the user was not found.
+      (redirectTo && !redirectIfFound && !user?.isLoggedIn) ||
+      // If redirectIfFound is also set, redirect if the user was found
+      (redirectIfFound && user?.isLoggedIn)
+    ) {
+      Router.push((redirectTo as unknown) as URL)
+    }
+  }, [user, redirectIfFound, redirectTo])
+
+  return { user, mutateUser }
+}
+-----------------
+
+src/lib/validationRules/LoginFormValidationRules.ts
+-----------------
+export default function validate(values: Record<string, unknown>) {
+  const errors: Record<string, unknown> = {}
+  if (!values.email) {
+    errors.email = 'Email is required'
+  }
+  if (!values.password) {
+    errors.password = 'Password is required'
+  }
+  return errors
+}
+-----------------
+
+src/lib/validationRules/RegisterFormValidationRules.ts
+-----------------
+export default function validate(values: Record<string, unknown>) {
+  const errors: Record<string, unknown> = {}
+  if (!values.email) {
+    errors.email = 'Email is required'
+  }
+  if (!values.username) {
+    errors.username = 'Username is required'
+  }
+  if (!values.password) {
+    errors.password = 'Password is required'
+  }
+
+  return errors
+}
+-----------------
+
+src/lib/aws.ts
+-----------------
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { S3Client } from '@aws-sdk/client-s3'
+
+export const dbClient = new DynamoDBClient({
+  region: 'us-east-1',
+})
+export const s3Client = new S3Client({
+  region: 'us-east-1',
+})
+-----------------
+
+src/lib/fetchJson.ts
+-----------------
+export default async function fetchJson(resource: RequestInfo, init: RequestInit) {
+  try {
+    const response = await fetch(resource, init)
+
+    // if the server replies, there's always some data in json
+    // if there's a network error, it will throw at the previous line
+    const data = await response.json()
+
+    if (response.ok) {
+      return data
+    }
+    return { status: response.status, ...data }
+  } catch (error) {
+    if (!error.data) {
+      error.data = { message: error.message }
+    }
+    throw error
+  }
+}
+-----------------
+
+src/lib/session.ts
+-----------------
+import { withIronSession } from 'next-iron-session'
+
+export default function withSession(handler) {
+  return withIronSession(handler, {
+    password: 'testtesttesttesttesttesttesttesttesttest' || process.env.SECRET_COOKIE_PASSWORD,
+    cookieName: 'userSession',
+    cookieOptions: {
+      secure: false, //process.env.NODE_ENV === 'production',
+    },
+  })
+}
+-----------------
+
+src/pages/_app.tsx
+-----------------
+import 'bootstrap/dist/css/bootstrap.min.css'
+import '@styles/global.scss'
+import React from 'react'
+import { SWRConfig } from 'swr'
+import type { AppProps } from 'next/app'
+import fetch from '@lib/fetchJson'
+
+export default function App({ Component, pageProps }: AppProps) {
+  return (
+    <SWRConfig
+      value={{
+        fetcher: fetch,
+      }}
+    >
+      <Component {...pageProps} />
+    </SWRConfig>
+  )
+}
+-----------------
+
+src/pages/index.tsx
+-----------------
+import Head from 'next/head'
+import Layout from '@components/loginLayout'
+import LoginBox from '@components/LoginForm'
+import RegisterBox from '@components/RegisterForm'
+import { useState } from 'react'
+
+export default function Index(): JSX.Element {
+  const [currentBox, setCurrentBox] = useState('login')
+  return (
+    <>
+      <Head>
+        <title>Login Page</title>
+        <link rel="icon" href="/favicon.ico" />
+      </Head>
+      <Layout>
+        <div className="root-container">
+          <div className="box-controller">
+            <div
+              className={`controller ${currentBox == 'login' ? 'selected-controller' : ''}`}
+              onClick={() => setCurrentBox('login')}
+            >
+              Login
+            </div>
+            <div
+              className={`controller ${currentBox == 'register' ? 'selected-controller' : ''}`}
+              onClick={() => setCurrentBox('register')}
+            >
+              Register
+            </div>
+          </div>
+          <div className="box-container">
+            {currentBox == 'login' && <LoginBox />}
+            {currentBox == 'register' && <RegisterBox />}
+          </div>
+        </div>
+      </Layout>
+    </>
+  )
+}
+-----------------
+
+src/pages/home.tsx
+-----------------
+import Head from 'next/head'
+import Layout, { siteTitle } from '@components/layout'
+import utilStyles from '@styles/utils.module.css'
+import { Container, Row, Col, CardColumns, Card, ListGroup, Button } from 'react-bootstrap'
+import UserPanel from '@components/UserPanel'
+import QueryForm from '@components/QueryForm'
+import useUser from '@lib/hooks/useUser'
+import useSWR from 'swr'
+
+import { useState } from 'react'
+import fetchJson from '@lib/fetchJson'
+
+function useQuery(queryObject) {
+  const queryStringArray = []
+  if (queryObject.artist) queryStringArray.push(`artist=${queryObject.artist}`)
+  if (queryObject.title) queryStringArray.push(`title=${queryObject.title}`)
+  if (queryObject.year) queryStringArray.push(`year=${queryObject.year}`)
+
+  const { data, error } = useSWR(
+    queryStringArray.length != 0 ? `/api/songs?${queryStringArray.join('&')}` : null
+  )
+
+  return {
+    songs: data,
+    isLoading: !error && !data,
+    isError: error,
+  }
+}
+
+export default function Home(): JSX.Element {
+  const { user } = useUser({ redirectTo: '/' })
+  const [query, setQuery] = useState('')
+  const { songs, isLoading: queryLoading } = useQuery(query)
+  const { data, error } = useSWR(
+    user?.isLoggedIn ? `/api/users/${user.email}/subscriptions` : null,
+    { refreshInterval: 1000 }
+  )
+
+  if (!user?.isLoggedIn) {
+    return <Layout>loading...</Layout>
+  }
+  return (
+    <Layout home>
+      <Head>
+        <title>{siteTitle}</title>
+      </Head>
+      <Container fluid>
+        <Row>
+          <Col>
+            <UserPanel />
+          </Col>
+          <Col>
+            <div className="root-container">{<QueryForm passQuery={setQuery} />}</div>
+          </Col>
+        </Row>
+        <Row>
+          <Col>
+            <h2 className={utilStyles.headingXl}>User Subscriptions</h2>
+            {!data && !error ? (
+              <p>Loading Subscriptions...</p>
+            ) : error ? (
+              <p>An Error has occured whilst loading subscriptions</p>
+            ) : data.length == 0 ? (
+              <p>There are currently no subscribed songs</p>
+            ) : (
+              <CardColumns>
+                {data.map((song) => (
+                  <Card style={{ width: '100%' }} key={song.title}>
+                    <Card.Img variant="top" src={song.img_url}></Card.Img>
+                    <Card.Body>
+                      <Card.Text>
+                        <ListGroup>
+                          <ListGroup.Item>Artist: {song.artist}</ListGroup.Item>
+                          <ListGroup.Item>Title: {song.title}</ListGroup.Item>
+                          <ListGroup.Item>Year: {song.year}</ListGroup.Item>
+                          <Button
+                            href="#"
+                            variant="danger"
+                            onClick={async (e) => {
+                              e.preventDefault()
+                              return fetchJson(
+                                `/api/users/${encodeURIComponent(user.email)}/subscriptions`,
+                                {
+                                  method: 'PATCH',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                  },
+                                  body: JSON.stringify({
+                                    operation: 'UNSUBSCRIBE',
+                                    artist: song.artist,
+                                    title: song.title,
+                                  }),
+                                }
+                              )
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </ListGroup>
+                      </Card.Text>
+                    </Card.Body>
+                  </Card>
+                ))}
+              </CardColumns>
+            )}
+          </Col>
+          <Col>
+            <h2 className={utilStyles.headingXl}>Query Results</h2>
+            {queryLoading ? (
+              <p>Pending Query...</p>
+            ) : songs.message ? (
+              <p>{songs.message}</p>
+            ) : (
+              <CardColumns>
+                {songs.map((song) => (
+                  <Card style={{ width: '100%' }} key={song.title}>
+                    <Card.Img variant="top" src={song.img_url}></Card.Img>
+                    <Card.Body>
+                      <Card.Text>
+                        <ListGroup>
+                          <ListGroup.Item>Artist: {song.artist}</ListGroup.Item>
+                          <ListGroup.Item>Title: {song.title}</ListGroup.Item>
+                          <ListGroup.Item>Year: {song.year}</ListGroup.Item>
+                          {data
+                            .map((song) => {
+                              return song.title
+                            })
+                            .includes(song.title) ? (
+                            <Button disabled href="#">
+                              Already Subscribed
+                            </Button>
+                          ) : (
+                            <Button
+                              href="#"
+                              onClick={async (e) => {
+                                e.preventDefault()
+                                return fetchJson(
+                                  `/api/users/${encodeURIComponent(user.email)}/subscriptions`,
+                                  {
+                                    method: 'PATCH',
+                                    headers: {
+                                      'Content-Type': 'application/json',
+                                    },
+                                    body: JSON.stringify({
+                                      operation: 'SUBSCRIBE',
+                                      artist: song.artist,
+                                      title: song.title,
+                                      year: song.year,
+                                      img_url: song.img_url,
+                                    }),
+                                  }
+                                )
+                              }}
+                            >
+                              Subscribe
+                            </Button>
+                          )}
+                        </ListGroup>
+                      </Card.Text>
+                    </Card.Body>
+                  </Card>
+                ))}
+              </CardColumns>
+            )}
+          </Col>
+        </Row>
+      </Container>
+    </Layout>
+  )
+}
+-----------------
+
+src/pages/api/users.ts
+-----------------
+import { GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb'
+import { dbClient } from '@lib/aws'
+import withSession from '@lib/session'
+
+import type { NextApiRequest, NextApiResponse } from 'next'
+
+interface UserData {
+  email: string
+  user_name: string
+  password: string
+}
+
+export default withSession(
+  async (_: NextApiRequest, res: NextApiResponse): Promise<unknown> => {
+    switch (_.method) {
+      case 'POST': {
+        const userData: UserData = _.body
+        const params = {
+          TableName: 'login',
+          Key: {
+            email: { S: userData.email },
+          },
+        }
+        const { Item } = await dbClient.send(new GetItemCommand(params))
+        if (!Item) {
+          const newUserParams = {
+            TableName: 'login',
+            Item: {
+              email: { S: userData.email },
+              user_name: { S: userData.user_name },
+              password: { S: userData.password },
+              subscriptions: { L: [] },
+            },
+          }
+          await dbClient.send(new PutItemCommand(newUserParams))
+          return res.status(200).send({ message: 'Account Created' })
+        }
+
+        return res.status(409).send({ message: 'Email already exists.' })
+      }
+      default:
+        res.setHeader('Allow', ['POST', 'PATCH'])
+        res.status(405).end(`Method ${_.method} Not Allowed`)
+    }
+  }
+)
+-----------------
+
+src/pages/api/songs.ts
+-----------------
+import { ScanCommand } from '@aws-sdk/client-dynamodb'
+import { dbClient } from '@lib/aws'
+
+import type { ScanCommandInput } from '@aws-sdk/client-dynamodb'
+import type { NextApiRequest, NextApiResponse } from 'next'
+
+interface SongQueryData {
+  title?: string
+  artist?: string
+  year?: string
+}
+
+interface SongQueryResult {
+  title?: { S: string }
+  artist?: { S: string }
+  year?: { S: string }
+  img_url?: { S: string }
+}
+
+const processQueryString = (data: SongQueryData): string => {
+  const queryStringArray = []
+
+  if (data.artist) queryStringArray.push('contains(artist, :artist)')
+  if (data.title) queryStringArray.push('contains(title, :title)')
+  if (data.year) queryStringArray.push('contains(#year, :year)')
+
+  return queryStringArray.join(' AND ')
+}
+
+const processItems = (data: SongQueryResult[]): SongQueryData[] => {
+  const processedData = []
+  data.map((song) => {
+    processedData.push({
+      title: song.title.S,
+      artist: song.artist.S,
+      year: song.year.S,
+      img_url: `https://s3720461-cc-a2-artist-images.s3.amazonaws.com/artists/${
+        song.img_url.S.split('/')[5]
+      }`,
+    })
+  })
+  return processedData
+}
+
+export default async (_: NextApiRequest, res: NextApiResponse): Promise<unknown> => {
+  switch (_.method) {
+    case 'GET': {
+      const songQuery: SongQueryData = _.query
+      const params: ScanCommandInput = {
+        TableName: 'music',
+        FilterExpression: processQueryString(songQuery),
+        ...(songQuery.year && {
+          ExpressionAttributeNames: {
+            '#year': 'year',
+          },
+        }),
+        ExpressionAttributeValues: {
+          ...(songQuery.artist && { ':artist': { S: songQuery.artist } }),
+          ...(songQuery.title && { ':title': { S: songQuery.title } }),
+          ...(songQuery.year && { ':year': { S: songQuery.year } }),
+        },
+      }
+      const { Items } = await dbClient.send(new ScanCommand(params))
+      if (Items.length == 0)
+        return res.status(200).json({ message: 'No result is retrieved. Please query again' })
+      const results = processItems(Items)
+      return res.status(200).json(results)
+    }
+    default:
+      res.setHeader('Allow', ['POST', 'PATCH'])
+      res.status(405).end(`Method ${_.method} Not Allowed`)
+  }
+}
+-----------------
+
+src/pages/api/session.ts
+-----------------
+import withSession from '@lib/session'
+
+import type { NextApiRequest, NextApiResponse } from 'next'
+import type { Session } from 'next-iron-session'
+
+interface NextApiRequestWithSession extends NextApiRequest {
+  session: Session
+}
+
+export default withSession(
+  async (_: NextApiRequestWithSession, res: NextApiResponse): Promise<unknown> => {
+    switch (_.method) {
+      case 'GET': {
+        const userSession = _.session.get('userSession')
+        if (userSession) {
+          return res.status(200).json({
+            isLoggedIn: true,
+            ...userSession,
+          })
+        }
+        return res.status(401).json({
+          isLoggedIn: false,
+        })
+      }
+      default:
+        res.setHeader('Allow', ['GET'])
+        res.status(405).end(`Method ${_.method} Not Allowed`)
+    }
+  }
+)
+-----------------
+
+src/pages/api/logout.ts
+-----------------
+import withSession from '@lib/session'
+import type { NextApiRequest, NextApiResponse } from 'next'
+import { Session } from 'next-iron-session'
+
+interface NextApiRequestWithSession extends NextApiRequest {
+  session: Session
+}
+
+export default withSession(async (req: NextApiRequestWithSession, res: NextApiResponse) => {
+  req.session.destroy()
+  return res.status(200).json({ isLoggedIn: false })
+})
+-----------------
+
+src/pages/api/users/login.ts
+-----------------
+import { GetItemCommand } from '@aws-sdk/client-dynamodb'
+import withSession from '@lib/session'
+import { dbClient } from '@lib/aws'
+
+import type { NextApiRequest, NextApiResponse } from 'next'
+import type { Session } from 'next-iron-session'
+
+interface NextApiRequestWithSession extends NextApiRequest {
+  session: Session
+}
+
+export default withSession(
+  async (_: NextApiRequestWithSession, res: NextApiResponse): Promise<unknown> => {
+    switch (_.method) {
+      case 'POST': {
+        const data = _.body
+        const params = {
+          TableName: 'login',
+          Key: {
+            email: { S: data.email },
+          },
+        }
+        const result = await dbClient.send(new GetItemCommand(params))
+        if (result.Item) {
+          const userData = result.Item
+          if (data.password !== userData.password.S) {
+            return res.status(401).send({ message: 'Email or Password is incorrect' })
+          }
+          _.session.set('userSession', { email: userData.email.S, userName: userData.user_name.S })
+          await _.session.save()
+          return res.status(200).send({ email: userData.email.S, userName: userData.user_name.S })
+        }
+
+        return res.status(401).send({ message: 'Email or Password is incorrect' })
+      }
+      default:
+        res.setHeader('Allow', ['POST'])
+        res.status(405).end(`Method ${_.method} Not Allowed`)
+    }
+  }
+)
+-----------------
+
+src/pages/api/users/[id]/subscriptions.ts
+-----------------
+import { GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb'
+import { dbClient } from '@lib/aws'
+
+import type { GetItemCommandInput, UpdateItemCommandInput } from '@aws-sdk/client-dynamodb'
+import type { NextApiRequest, NextApiResponse } from 'next'
+
+interface SubscriptionData {
+  title?: string
+  artist?: string
+  year?: string
+}
+
+interface SubscriptionResult {
+  M: {
+    title?: { S: string }
+    artist?: { S: string }
+    year?: { S: string }
+    img_url?: { S: string }
+  }
+}
+
+const processItems = (data: SubscriptionResult[]): SubscriptionData[] => {
+  const processedData = []
+  data.map((song) => {
+    const { M: data } = song
+    processedData.push({
+      title: data.title.S,
+      artist: data.artist.S,
+      year: data.year.S,
+      img_url: data.img_url.S,
+    })
+  })
+  return processedData
+}
+
+const getSubscriptions = async (id) => {
+  const params: GetItemCommandInput = {
+    TableName: 'login',
+    Key: {
+      email: { S: id },
+    },
+    ProjectionExpression: 'subscriptions',
+  }
+  const {
+    Item: {
+      subscriptions: { L: subscriptions },
+    },
+  } = await dbClient.send(new GetItemCommand(params))
+  return subscriptions
+}
+
+export default async (_: NextApiRequest, res: NextApiResponse): Promise<unknown> => {
+  switch (_.method) {
+    case 'GET': {
+      const { id } = _.query
+
+      const subscriptions = (await getSubscriptions(id)) as SubscriptionResult[]
+      return res.status(200).json(processItems(subscriptions))
+    }
+    case 'PATCH': {
+      const { id } = _.query
+      const data = _.body
+      const currentSubscriptions = await getSubscriptions(id)
+
+      switch (data.operation) {
+        case 'UNSUBSCRIBE': {
+          const index = currentSubscriptions
+            .map((object) => {
+              return object.M.title.S
+            })
+            .indexOf(data.title)
+
+          const params: UpdateItemCommandInput = {
+            TableName: 'login',
+            Key: {
+              email: { S: id as string },
+            },
+            UpdateExpression: `REMOVE subscriptions[${index}]`,
+            ReturnValues: 'ALL_NEW',
+          }
+          const {
+            Attributes: {
+              subscriptions: { L: subscriptions },
+            },
+          } = await dbClient.send(new UpdateItemCommand(params))
+
+          return res.status(200).json(subscriptions)
+        }
+        case 'SUBSCRIBE': {
+          const newSubscription = {
+            artist: { S: data.artist },
+            title: { S: data.title },
+            year: { S: data.year },
+            img_url: { S: data.img_url },
+          }
+          const params: UpdateItemCommandInput = {
+            TableName: 'login',
+            Key: {
+              email: { S: id as string },
+            },
+            UpdateExpression: 'SET subscriptions = list_append(subscriptions, :newSubscription)',
+            ExpressionAttributeValues: {
+              ':newSubscription': {
+                L: [{ M: newSubscription }],
+              },
+            },
+            ReturnValues: 'UPDATED_NEW',
+          }
+          const {
+            Attributes: {
+              subscriptions: { L: subscriptions },
+            },
+          } = await dbClient.send(new UpdateItemCommand(params))
+          return res.status(200).json(subscriptions)
+        }
+      }
+      break
+    }
+    default:
+      res.setHeader('Allow', ['GET', 'PATCH'])
+      res.status(405).end(`Method ${_.method} Not Allowed`)
+  }
+}
+-----------------
+
+src/styles/global.scss
+-----------------
+html,
+body,
+#root {
+	width: 100%;
+	height: 100%;
+	box-sizing: border-box;
+}
+
+$blue_theme: #70a1ff;
+//Root Container
+.root-container {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	flex-direction: column;
+}
+
+.box-controller {
+	visibility: visible;
+	display: -webkit-box;
+	display: -ms-flexbox;
+	display: flex;
+	max-width: 24em;
+	min-width: 21em;
+	height: 35px;
+	-webkit-box-shadow: 0px 0px 20px 0px rgba(15, 15, 15, 0.2);
+	box-shadow: 0px 0px 20px 0px rgba(15, 15, 15, 0.2);
+	margin-bottom: 30px;
+	align-items: center;
+	transition: visibility 0.5s ease-out;
+}
+
+.controller {
+	flex: 1;
+	text-align: center;
+	height: 100%;
+	line-height: 2;
+	cursor: pointer;
+}
+
+//Currently Selected Controller
+.selected-controller {
+	transition: border 0.5s ease-out;
+	border-bottom: 2px solid $blue_theme;
+}
+
+.box-container {
+	display: flex;
+	flex-direction: column;
+	max-width: 24em;
+	min-width: 21em;
+	box-shadow: 0px 0px 20px 0px rgba(15, 15, 15, 0.2);
+	border-radius: 6px;
+	padding: 24px;
+}
+
+.inner-container {
+	transition: visibility 0.2s ease-out;
+}
+
+.inner-container.show {
+	visibility: visible;
+}
+
+//Header
+.header {
+	text-align: center;
+	padding: 5px;
+	margin-bottom: 17px;
+	/* margin-left: 35px; */
+	/* margin-right: 35px; */
+	font-family: Ozxgen, sans-serif;
+	font-size: 22px;
+	border-bottom: 2px solid $blue_theme;
+}
+
+.box {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+}
+
+.input-group {
+	display: flex;
+	flex-direction: column;
+	margin-top: 5px;
+	margin-bottom: 5px;
+}
+
+//Label
+.login-label {
+	font-family: Oxygen, sans-serif;
+	font-size: 20px;
+	font-weight: 600;
+	padding-left: 5px;
+}
+
+//Input
+.login-input {
+	height: 2.1em;
+	border-radius: 3px;
+	border: 1px solid $blue_theme;
+	transition: border 0.4s ease-out;
+	padding: 13px;
+	font-family: Oxygen, sans-serif;
+	font-size: 19px;
+	color: #3e3e42;
+	background: rgba(15, 15, 15, 0.01);
+}
+
+.login-input:hover {
+	border: 2px solid $blue_theme;
+}
+
+.login-input:focus {
+	border: 2px solid #6565e7;
+	box-shadow: 0px 0px 20px rgba(15, 15, 15, 0.2);
+}
+
+//Input Placeholder
+.login-input::placeholder {
+	font-family: Oxygen, sans-serif;
+	font-size: 16px; //color: rgba(46, 213, 116, 0.839);
+	color: rgba(15, 15, 15, 0.4);
+}
+
+.login-btn {
+	padding: 2px 30px;
+	/* background-color: #417cef; */
+	border: 0;
+	font-size: 18px;
+	border-radius: 3px;
+	font-family: Oxygen, sans-serif;
+	background-color: rgba(15, 15, 15, 0.03);
+	margin-top: 20px;
+	border: 2px solid #417cef;
+	transition: background-color 0.3s ease-out;
+	cursor: pointer;
+}
+
+.login-btn:hover,
+.login-btn:focus {
+	background-color: #417cef;
+	color: white;
+}
+
+.message-input {
+	height: 10em;
+	border-radius: 3px;
+	border: 1px solid $blue_theme;
+	transition: border 0.4s ease-out;
+	padding: 13px;
+	font-family: Oxygen, sans-serif;
+	font-size: 19px;
+	color: #3e3e42;
+	background: rgba(15, 15, 15, 0.01);
+}
+
+.message-input:hover {
+	border: 2px solid $blue_theme;
+}
+
+.message-input:focus {
+	border: 2px solid #6565e7;
+	box-shadow: 0px 0px 20px rgba(15, 15, 15, 0.2);
+}
+
+.message-input::placeholder {
+	font-family: Oxygen, sans-serif;
+	font-size: 16px; //color: rgba(46, 213, 116, 0.839);
+	color: rgba(15, 15, 15, 0.4);
+}
+
+
+.danger-error {
+	color: #e74c3c;
+	font-size: 16px;
+}
+
+//Password
+.password-state {
+	display: flex;
+	flex-direction: row;
+	margin-top: 20px;
+}
+
+.pwd {
+	height: 6px;
+	flex: 1;
+	visibility: hidden;
+}
+
+.pwd-weak {
+	background-color: #e74c3c;
+}
+
+.pwd-medium {
+	background-color: #3498db;
+}
+
+.pwd-strong {
+	background-color: #2ecc71;
+}
+
+.show {
+	visibility: visible;
+}
+-----------------
+
+src/styles/layout.module.css
+-----------------
+.container {
+	max-width: 36rem;
+	padding: 0 1 rem;
+	margin: 3rem auto 6rem;
+}
+
+.header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+.backToHome {
+	margin: 3rem 0 0;
+}
+-----------------
+
+src/styles/utils.module.css
+-----------------
+.heading2Xl {
+	font-size: 2.5rem;
+	line-height: 1.2;
+	font-weight: 800;
+	letter-spacing: -0.05rem;
+	margin: 1rem 0;
+}
+
+.headingXl {
+	font-size: 2rem;
+	line-height: 1.3;
+	font-weight: 800;
+	letter-spacing: -0.05rem;
+	margin: 1rem 0;
+	text-align: center;
+}
+
+.headingLg {
+	font-size: 1.5rem;
+	line-height: 1.4;
+	margin: 1rem 0;
+}
+
+.headingMd {
+	font-size: 1.2rem;
+	line-height: 1.5;
+}
+
+.borderCircle {
+	border-radius: 9999px;
+}
+
+.colorInherit {
+	color: inherit;
+}
+
+.padding1px {
+	padding-top: 1px;
+}
+
+.list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.listItem {
+	margin: 0 0 1.25rem;
+}
+
+.lightText {
+	color: #666;
+}
+-----------------
+
+src/tsconfig.json
+-----------------
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "rootDir": ".",
+    "paths": {
+      "@lib/*": [
+        "lib/*"
+      ],
+      "@styles/*": [
+        "styles/*"
+      ],
+      "@components/*": [
+        "components/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+-----------------

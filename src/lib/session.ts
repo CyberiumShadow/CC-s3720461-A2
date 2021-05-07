@@ -6,7 +6,7 @@ export default function withSession(handler) {
     password: 'testtesttesttesttesttesttesttesttesttest' || process.env.SECRET_COOKIE_PASSWORD,
     cookieName: 'userSession',
     cookieOptions: {
-      secure: process.env.NODE_ENV === 'production',
+      secure: false, //process.env.NODE_ENV === 'production',
     },
   })
 }

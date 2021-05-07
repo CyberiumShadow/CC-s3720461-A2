@@ -23,7 +23,7 @@ export default function Layout({ children, home }: { children: React.ReactNode; 
         ) : (
           <>
             <h2 className={utilStyles.headingLg}>
-              <Link href="/forum">
+              <Link href="/home">
                 <a className={utilStyles.colorInherit}>{name}</a>
               </Link>
             </h2>
@@ -33,7 +33,7 @@ export default function Layout({ children, home }: { children: React.ReactNode; 
       <main>{children}</main>
       {!home && (
         <div className={styles.backToHome}>
-          <Link href="/forum">
+          <Link href="/home">
             <a>← Back to home</a>
           </Link>
         </div>
